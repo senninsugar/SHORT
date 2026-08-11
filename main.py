@@ -4,9 +4,6 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urlparse, parse_qs, unquote
 import time
-import re
-import random
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = FastAPI(
     title="YouTube Shorts Search API",
@@ -30,23 +27,14 @@ HEADERS = {
     "Accept": (
         "text/html,application/xhtml+xml,"
         "application/xml;q=0.9,image/avif,image/webp,"
-        "image/apng,*/*;q=0.8"
+        "*/*;q=0.8"
     ),
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-User": "?1",
-    "Referer": "https://html.duckduckgo.com/"
+    "Referer": "https://duckduckgo.com/"
 }
 
-MAX_RETRIES = 5
-REQUEST_TIMEOUT = 25
-DUCKDUCKGO_PAGE_SIZE = 30
+MAX_RETRIES = 3
+REQUEST_TIMEOUT = 20
 
 
 def normalize_hostname(hostname):
@@ -75,8 +63,7 @@ def is_duckduckgo_hostname(hostname):
 
     return hostname in [
         "duckduckgo.com",
-        "html.duckduckgo.com",
-        "lite.duckduckgo.com"
+        "html.duckduckgo.com"
     ]
 
 
@@ -86,7 +73,7 @@ def clean_url(url):
 
     url = url.strip()
 
-    for _ in range(8):
+    for _ in range(3):
         decoded_url = unquote(url)
 
         if decoded_url == url:
@@ -104,7 +91,7 @@ def extract_youtube_url(url):
     try:
         current_url = clean_url(url)
 
-        for _ in range(10):
+        for _ in range(5):
             parsed = urlparse(current_url)
 
             if is_youtube_hostname(
@@ -121,32 +108,26 @@ def extract_youtube_url(url):
                 parsed.query
             )
 
-            possible_keys = [
-                "uddg",
-                "u"
-            ]
+            if "uddg" not in query:
+                return None
 
             next_url = None
 
-            for key in possible_keys:
-                if key not in query:
-                    continue
+            for encoded_url in query["uddg"]:
+                decoded_url = clean_url(
+                    encoded_url
+                )
 
-                for encoded_url in query[key]:
-                    decoded_url = clean_url(
-                        encoded_url
-                    )
+                decoded_parsed = urlparse(
+                    decoded_url
+                )
 
-                    decoded_parsed = urlparse(
-                        decoded_url
-                    )
+                if is_youtube_hostname(
+                    decoded_parsed.hostname
+                ):
+                    return decoded_url
 
-                    if is_youtube_hostname(
-                        decoded_parsed.hostname
-                    ):
-                        return decoded_url
-
-                    next_url = decoded_url
+                next_url = decoded_url
 
             if not next_url:
                 return None
@@ -189,11 +170,6 @@ def extract_video_id(url):
                 1
             )[0]
 
-            video_id = video_id.split(
-                "#",
-                1
-            )[0]
-
             video_id = video_id.strip()
 
             if video_id:
@@ -208,7 +184,7 @@ def extract_video_id(url):
                 video_id = params["v"][0]
 
                 if video_id:
-                    return video_id.strip()
+                    return video_id
 
         if path.startswith("/embed/"):
             video_id = path.split(
@@ -223,11 +199,6 @@ def extract_video_id(url):
 
             video_id = video_id.split(
                 "?",
-                1
-            )[0]
-
-            video_id = video_id.split(
-                "#",
                 1
             )[0]
 
@@ -254,9 +225,7 @@ def is_explicit_shorts_url(url):
         ):
             return False
 
-        path = parsed.path or ""
-
-        return path.startswith(
+        return parsed.path.startswith(
             "/shorts/"
         )
 
@@ -375,15 +344,17 @@ def extract_result_elements(soup):
 
     unique_elements = []
 
-    seen = set()
+    seen_elements = set()
 
     for element in elements:
-        key = str(element)
+        element_id = id(element)
 
-        if key in seen:
+        if element_id in seen_elements:
             continue
 
-        seen.add(key)
+        seen_elements.add(
+            element_id
+        )
 
         unique_elements.append(
             element
@@ -392,182 +363,29 @@ def extract_result_elements(soup):
     return unique_elements
 
 
-def contains_shorts_keyword(
-    title,
-    snippet,
-    url,
-    query
-):
-    text = (
-        f"{title} "
-        f"{snippet} "
-        f"{url} "
-        f"{query}"
-    ).lower()
-
-    keywords = [
-        "youtube shorts",
-        "youtube short",
-        "shorts",
-        "/shorts/",
-        "ショート",
-        "short video",
-        "short動画",
-        "#shorts"
-    ]
-
-    for keyword in keywords:
-        if keyword.lower() in text:
-            return True
-
-    return False
-
-
-def is_valid_youtube_video_id(video_id):
-    if not video_id:
-        return False
-
-    if len(video_id) < 5:
-        return False
-
-    if len(video_id) > 20:
-        return False
-
-    return (
-        re.fullmatch(
-            r"[A-Za-z0-9_-]+",
-            video_id
-        )
-        is not None
-    )
-
-
-def is_valid_search_html(text):
-    if not text:
-        return False
-
-    if len(text) < 1000:
-        return False
-
-    lowered = text.lower()
-
-    block_words = [
-        "captcha",
-        "robot check",
-        "access denied",
-        "unusual traffic"
-    ]
-
-    for word in block_words:
-        if word in lowered:
-            return False
-
-    if (
-        ".result"
-        not in lowered
-        and "result__a"
-        not in lowered
-        and "result__title"
-        not in lowered
-    ):
-        return False
-
-    return True
-
-
-def create_session():
-    session = requests.Session()
-
-    session.headers.update(
-        HEADERS
-    )
-
-    return session
-
-
-def request_duckduckgo(
-    search_query,
-    page
-):
-    offset = (
-        (page - 1)
-        * DUCKDUCKGO_PAGE_SIZE
-    )
-
-    get_url = (
-        "https://html.duckduckgo.com/html/"
-        f"?q={quote(search_query)}"
-    )
-
-    if page > 1:
-        get_url += (
-            f"&s={offset}"
-        )
-
-    post_url = (
-        "https://html.duckduckgo.com/html/"
-    )
-
-    lite_url = (
-        "https://lite.duckduckgo.com/lite/"
-    )
-
-    session = create_session()
-
+def request_duckduckgo(url):
+    last_response = None
     last_error = None
 
     for attempt in range(
         MAX_RETRIES
     ):
         try:
-            if attempt % 3 == 0:
-                response = session.get(
-                    get_url,
-                    timeout=REQUEST_TIMEOUT,
-                    allow_redirects=True
-                )
+            response = requests.get(
+                url,
+                headers=HEADERS,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True
+            )
 
-            elif attempt % 3 == 1:
-                payload = {
-                    "q": search_query
-                }
+            last_response = response
 
-                if page > 1:
-                    payload["s"] = str(
-                        offset
-                    )
-
-                response = session.post(
-                    post_url,
-                    data=payload,
-                    timeout=REQUEST_TIMEOUT,
-                    allow_redirects=True
-                )
-
-            else:
-                lite_params = {
-                    "q": search_query
-                }
-
-                if page > 1:
-                    lite_params["s"] = str(
-                        offset
-                    )
-
-                response = session.get(
-                    lite_url,
-                    params=lite_params,
-                    timeout=REQUEST_TIMEOUT,
-                    allow_redirects=True
-                )
-
-            if response.status_code == 200:
-                text = response.text
-
-                if is_valid_search_html(
-                    text
-                ):
-                    return text
+            if response.status_code in [
+                200,
+                202
+            ]:
+                if response.text:
+                    return response
 
             last_error = (
                 f"HTTP {response.status_code}"
@@ -578,25 +396,42 @@ def request_duckduckgo(
 
         if attempt < MAX_RETRIES - 1:
             time.sleep(
-                1.0 + (
-                    attempt * 1.5
-                ) + random.uniform(
-                    0.2,
-                    0.8
-                )
+                1.5 * (attempt + 1)
             )
 
+    if last_response is not None:
+        if last_response.text:
+            return last_response
+
     raise RuntimeError(
-        "DuckDuckGoへのアクセスに失敗しました"
+        "DuckDuckGoへのアクセスに失敗しました: "
+        f"{last_error}"
     )
 
 
-def parse_duckduckgo_results(
-    html,
-    query
+def search_duckduckgo(
+    query,
+    max_results=20
 ):
+    search_query = (
+        f"site:youtube.com/shorts {query}"
+    )
+
+    encoded_query = quote(
+        search_query
+    )
+
+    url = (
+        "https://html.duckduckgo.com/html/"
+        f"?q={encoded_query}"
+    )
+
+    response = request_duckduckgo(
+        url
+    )
+
     soup = BeautifulSoup(
-        html,
+        response.text,
         "html.parser"
     )
 
@@ -605,6 +440,8 @@ def parse_duckduckgo_results(
     )
 
     results = []
+
+    used_video_ids = set()
 
     for result in result_elements:
         title = get_result_title(
@@ -629,6 +466,11 @@ def parse_duckduckgo_results(
         if not youtube_url:
             continue
 
+        if not is_explicit_shorts_url(
+            youtube_url
+        ):
+            continue
+
         video_id = extract_video_id(
             youtube_url
         )
@@ -636,29 +478,12 @@ def parse_duckduckgo_results(
         if not video_id:
             continue
 
-        if not is_valid_youtube_video_id(
-            video_id
-        ):
+        if video_id in used_video_ids:
             continue
 
-        explicit_shorts = (
-            is_explicit_shorts_url(
-                youtube_url
-            )
+        used_video_ids.add(
+            video_id
         )
-
-        has_shorts_keyword = (
-            contains_shorts_keyword(
-                title,
-                snippet,
-                youtube_url,
-                query
-            )
-        )
-
-        if not explicit_shorts:
-            if not has_shorts_keyword:
-                continue
 
         results.append({
             "title": title,
@@ -672,90 +497,11 @@ def parse_duckduckgo_results(
             "snippet": snippet,
             "type": "youtube_short",
             "source_url": youtube_url,
-            "is_explicit_shorts": explicit_shorts
+            "is_explicit_shorts": True
         })
 
-    return results
-
-
-def search_one_query(
-    query,
-    page
-):
-    search_query = (
-        f"site:youtube.com/shorts {query}"
-    )
-
-    html = request_duckduckgo(
-        search_query,
-        page
-    )
-
-    return parse_duckduckgo_results(
-        html,
-        query
-    )
-
-
-def search_duckduckgo(
-    query,
-    page=1,
-    max_results=20
-):
-    search_queries = [
-        f"site:youtube.com/shorts {query}",
-        f"site:youtube.com/shorts {query} shorts",
-        f"site:youtube.com/shorts {query} ショート"
-    ]
-
-    results = []
-
-    used_video_ids = set()
-
-    with ThreadPoolExecutor(
-        max_workers=len(search_queries)
-    ) as executor:
-
-        futures = {
-            executor.submit(
-                request_duckduckgo,
-                search_query,
-                page
-            ): search_query
-            for search_query in search_queries
-        }
-
-        for future in as_completed(
-            futures
-        ):
-            try:
-                html = future.result()
-            except Exception:
-                continue
-
-            page_results = parse_duckduckgo_results(
-                html,
-                query
-            )
-
-            for item in page_results:
-                video_id = item[
-                    "video_id"
-                ]
-
-                if video_id in used_video_ids:
-                    continue
-
-                used_video_ids.add(
-                    video_id
-                )
-
-                results.append(
-                    item
-                )
-
-                if len(results) >= max_results:
-                    return results
+        if len(results) >= max_results:
+            break
 
     return results
 
@@ -767,7 +513,7 @@ def index():
         "name": "YouTube Shorts Search API",
         "version": "1.0.0",
         "status": "online",
-        "endpoint": "/api/search?q=検索ワード&page=1",
+        "endpoint": "/api/search?q=検索ワード",
         "type": "youtube_shorts"
     }
 
@@ -777,11 +523,6 @@ def api_search(
     q: str = Query(
         ...,
         min_length=1
-    ),
-    page: int = Query(
-        1,
-        ge=1,
-        le=100
     ),
     limit: int = Query(
         20,
@@ -796,15 +537,14 @@ def api_search(
             "success": False,
             "query": q,
             "type": "youtube_shorts",
-            "page": page,
             "count": 0,
-            "results": []
+            "results": [],
+            "error": "検索ワードが空です"
         }
 
     try:
         results = search_duckduckgo(
             query,
-            page,
             limit
         )
 
@@ -812,9 +552,26 @@ def api_search(
             "success": True,
             "query": query,
             "type": "youtube_shorts",
-            "page": page,
             "count": len(results),
             "results": results
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "success": False,
+            "query": query,
+            "type": "youtube_shorts",
+            "count": 0,
+            "results": []
+        }
+
+    except requests.exceptions.RequestException:
+        return {
+            "success": False,
+            "query": query,
+            "type": "youtube_shorts",
+            "count": 0,
+            "results": []
         }
 
     except Exception:
@@ -822,7 +579,6 @@ def api_search(
             "success": False,
             "query": query,
             "type": "youtube_shorts",
-            "page": page,
             "count": 0,
             "results": []
         }
@@ -833,11 +589,6 @@ def api_debug(
     q: str = Query(
         ...,
         min_length=1
-    ),
-    page: int = Query(
-        1,
-        ge=1,
-        le=100
     )
 ):
     query = q.strip()
@@ -846,7 +597,6 @@ def api_debug(
         return {
             "success": False,
             "query": q,
-            "page": page,
             "results": []
         }
 
@@ -854,30 +604,76 @@ def api_debug(
         f"site:youtube.com/shorts {query}"
     )
 
+    encoded_query = quote(
+        search_query
+    )
+
+    url = (
+        "https://html.duckduckgo.com/html/"
+        f"?q={encoded_query}"
+    )
+
     try:
-        html = request_duckduckgo(
-            search_query,
-            page
+        response = request_duckduckgo(
+            url
         )
 
-        raw_results = parse_duckduckgo_results(
-            html,
-            query
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
         )
+
+        result_elements = extract_result_elements(
+            soup
+        )
+
+        results = []
+
+        for result in result_elements:
+            title = get_result_title(
+                result
+            )
+
+            raw_url = get_result_url(
+                result
+            )
+
+            snippet = get_result_snippet(
+                result
+            )
+
+            youtube_url = extract_youtube_url(
+                raw_url
+            )
+
+            video_id = extract_video_id(
+                youtube_url
+            )
+
+            results.append({
+                "title": title,
+                "raw_url": raw_url,
+                "youtube_url": youtube_url,
+                "video_id": video_id,
+                "is_shorts": (
+                    is_explicit_shorts_url(
+                        youtube_url
+                    )
+                ),
+                "snippet": snippet
+            })
 
         return {
             "success": True,
             "query": query,
-            "page": page,
             "duckduckgo_query": search_query,
-            "result_count": len(raw_results),
-            "results": raw_results
+            "result_count": len(results),
+            "results": results
         }
 
     except Exception:
         return {
             "success": False,
             "query": query,
-            "page": page,
             "results": []
         }
