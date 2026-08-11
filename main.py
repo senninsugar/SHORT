@@ -6,6 +6,7 @@ from urllib.parse import quote, urlparse, parse_qs, unquote
 import time
 import re
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 app = FastAPI(
     title="YouTube Shorts Search API",
@@ -711,38 +712,50 @@ def search_duckduckgo(
 
     used_video_ids = set()
 
-    for search_query in search_queries:
-        try:
-            html = request_duckduckgo(
+    with ThreadPoolExecutor(
+        max_workers=len(search_queries)
+    ) as executor:
+
+        futures = {
+            executor.submit(
+                request_duckduckgo,
                 search_query,
                 page
-            )
-        except Exception:
-            continue
+            ): search_query
+            for search_query in search_queries
+        }
 
-        page_results = parse_duckduckgo_results(
-            html,
-            query
-        )
-
-        for item in page_results:
-            video_id = item[
-                "video_id"
-            ]
-
-            if video_id in used_video_ids:
+        for future in as_completed(
+            futures
+        ):
+            try:
+                html = future.result()
+            except Exception:
                 continue
 
-            used_video_ids.add(
-                video_id
+            page_results = parse_duckduckgo_results(
+                html,
+                query
             )
 
-            results.append(
-                item
-            )
+            for item in page_results:
+                video_id = item[
+                    "video_id"
+                ]
 
-            if len(results) >= max_results:
-                return results
+                if video_id in used_video_ids:
+                    continue
+
+                used_video_ids.add(
+                    video_id
+                )
+
+                results.append(
+                    item
+                )
+
+                if len(results) >= max_results:
+                    return results
 
     return results
 
