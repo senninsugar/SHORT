@@ -363,7 +363,7 @@ def extract_result_elements(soup):
     return unique_elements
 
 
-def request_duckduckgo(url):
+def request_duckduckgo(url, method="GET", data=None):
     last_response = None
     last_error = None
 
@@ -371,12 +371,21 @@ def request_duckduckgo(url):
         MAX_RETRIES
     ):
         try:
-            response = requests.get(
-                url,
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True
-            )
+            if method.upper() == "POST":
+                response = requests.post(
+                    url,
+                    headers=HEADERS,
+                    data=data,
+                    timeout=REQUEST_TIMEOUT,
+                    allow_redirects=True
+                )
+            else:
+                response = requests.get(
+                    url,
+                    headers=HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                    allow_redirects=True
+                )
 
             last_response = response
 
@@ -438,6 +447,22 @@ def search_duckduckgo(
     result_elements = extract_result_elements(
         soup
     )
+
+    if not result_elements:
+        time.sleep(1)
+        post_url = "https://html.duckduckgo.com/html/"
+        response = request_duckduckgo(
+            post_url,
+            method="POST",
+            data={"q": search_query}
+        )
+        soup = BeautifulSoup(
+            response.text,
+            "html.parser"
+        )
+        result_elements = extract_result_elements(
+            soup
+        )
 
     results = []
 
@@ -626,6 +651,22 @@ def api_debug(
         result_elements = extract_result_elements(
             soup
         )
+
+        if not result_elements:
+            time.sleep(1)
+            post_url = "https://html.duckduckgo.com/html/"
+            response = request_duckduckgo(
+                post_url,
+                method="POST",
+                data={"q": search_query}
+            )
+            soup = BeautifulSoup(
+                response.text,
+                "html.parser"
+            )
+            result_elements = extract_result_elements(
+                soup
+            )
 
         results = []
 
